@@ -133,10 +133,11 @@ venv.bak/
 # Spyder project settings
 .spyderproject
 .spyproject
+#
 
 # Rope project settings
 .ropeproject
-
+/BigDataKey
 # mkdocs documentation
 /site
 
@@ -147,6 +148,8 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+
 
 # pytype static type analyzer
 .pytype/
