@@ -918,3 +918,299 @@ sudo systemctl nginx
 ```
 
 # 3. Разворачиваем Hive и партицируем таблицы:
+
+Развернем postgres на NameNode'е. 
+
+```
+ssh namenode
+```
+Работать будем из-под пользователя team.
+```
+su team
+```
+Установим postgres:
+```
+sudo apt install postgresql
+```
+
+Создадим и установим права на БД для MetaStore:
+
+```
+sudo -i -u postgres
+```
+
+Далее в консоли:
+
+```
+psql
+
+CREATE USER hive with password 'hivepass';
+CREATE DATABASE metastore WITH owner hive;
+#Иногда, пользователь может падать в ошибку т.к. не имеет доступа к схеме public. Пропишем это отдельно 
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT, INSERT, UPDATE, DELETE ON TABLES TO hive;
+GRANT ALL PRIVILEGES ON DATABASE "metastore" to hive;
+\q 
+exit
+#выходим из консоли
+```
+
+Установим сетевой доступ к БД:
+
+```
+sudo nano /etc/postgresql/16/main/postgresql.conf
+```
+
+Пропишем там следующие конфиги: 
+
+```
+listen_addresses = 'team-45-nn'
+
+```
+а также, 
+
+```
+sudo nano /etc/postgresql/16/main/pg_hba.conf
+```
+там пропишем в разделе IPv4 connections:
+```
+host		metastore		hive		192.168.1.182/32 password
+```
+Перезапустим Postgres с обновленными конфигами:
+
+```
+sudo systemctl restart postgresql
+```
+
+Можно также протестировать подключение (с JumpNode и NameNode):
+
+```
+ssh team-45-jn
+sudo apt install postgresql-client-16
+psql -h team-45-nn -p 5432 -U hive -W -d metastore
+# Выйдем из консоли 
+\q
+```
+Переключимся на пользователя hadoop
+
+```
+sudo -i -u hadoop
+wget https://dlcdn.apache.org/hive/hive-4.0.1/apache-hive-4.0.1-bin.tar.gz
+tar -xvzf apache-hive-4.0.1-bin.tar.gz
+```
+Далее перейдем к настройке Hive:
+
+
+```
+cd apache-hive-4.0.1-bin
+#Установим драйвер postgres
+cd ./lib
+wget https://jdbc.postgresql.org/download/postgresql-42.7.4.jar
+```
+
+Пропишем конфиги самого Hive:
+
+```
+nano hive-site.xml
+```
+
+В **hive-site.xml** пропишем:
+
+```
+<configuration>
+  <property>
+    <name>hive.server2.option.authentification</name>
+    <value>NONE</value>
+  </property>
+    <property>
+    <name>hive.server2.thrift.port</name>
+    <value>5433</value>
+  </property>
+  <property>
+    <name>hive.metastore.warehouse.dir</name>
+    <value>/user/hive/warehouse</value>
+  </property>
+  <property>
+  <name>hive.metastore.port</name>
+  <value>9084</value> <!-- Choose an alternative port -->
+  <description>Port number for the Hive Metastore Server</description>
+</property>
+  <property>
+    <name>javax.jdo.option.ConnectionUserName</name>
+    <value>hive</value>
+    <description>Username to use against metastore database</description>
+  </property>
+  <property>
+    <name>javax.jdo.option.ConnectionPassword</name>
+    <value>hivepass</value>
+    <description>password to use against metastore database</description>
+  </property>
+  
+  <property>
+    <name>javax.jdo.option.ConnectionURL</name>
+    <value>jdbc:postgresql://team-45-nn:5432/metastore</value>
+  </property>
+<property>
+    <name>javax.jdo.option.ConnectionDriverName</name>
+    <value>org.postgresql.Driver</value>
+  </property>
+<property>
+  <name>hive.server2.webui.enabled</name>
+  <value>true</value>
+  <description>Enable the Hive Web UI</description>
+</property>
+
+<property>
+  <name>hive.server2.webui.port</name>
+  <value>12345</value>
+  <description>Port for the Hive Web UI</description>
+</property>
+
+<property>
+  <name>hive.server2.webui.bind.host</name>
+  <value>0.0.0.0</value> 
+</property>
+</configuration>
+```
+
+Переместим созданный файлик:
+```
+mv hive-site.xml ~/apache-hive-4.0.1-bin/conf/
+```
+
+Также изменим **.profile** для нашего Hive:
+
+```
+nano ~/.profile
+[ПРОПИШЕМ]
+export HIVE_HOME=/home/hadoop/apache-hive-4.0.1-bin
+export HIVE_CONF_DIR=$HIVE_HOME/conf
+export HIVE_AUX_JARS_PATH=$HIVE_HOME/lib/*
+export PATH=$PATH:$HIVE_HOME/bin
+```
+Активируем профиль:
+```
+source ~/.profile
+```
+После этого настроим подключение с нашей локальной машины. Настроим авторизацию в nginx на JumpNode и добавим строчку в конфиг хоста jumpnode на нашей **ЛОКАЛЬНОЙ МАШИНЕ**.
+
+```
+su team
+cd /etc/nginx/sites-available/
+sudo cp dn0 hv
+sudo ln -s /etc/nginx/sites-available/hv /etc/nginx/sites-enabled/hv
+sudo nano hv
+[ПИШЕМ ДАННЫЕ]
+sudo systemctl restart nginx
+```
+Прописываем туда такое:
+
+```
+server {
+        listen 12345 default_server;
+
+
+
+        server_name hv;
+
+        location / {
+                # First attempt to serve request as file, then
+                # as directory, then fall back to displaying a 404.
+                proxy_pass http://127.0.0.1:12345;
+                auth_basic "Restricted Access";
+                auth_basic_user_file /etc/nginx/.htpasswd;
+        }
+
+}
+```
+А также на всякий случай поменяем число worker-connections в конфигах nginx до 2048:
+
+```
+sudo nano /etc/nginx/nginx.conf
+[ПРОПИСЫВАЕМ]
+worker_rlimit_nofile 100000;
+events {
+        worker_connections 2048;
+        # multi_accept on;
+}
+
+sudo nano /etc/security/limits.conf
+
+[ПРОПИСЫВАЕМ]
+www-data soft nofile 100000
+www-data hard nofile 100000
+```
+
+На локальной машине выполним:
+
+```
+nano ~/.ssh/config
+```
+Прописываем туда:
+```
+Host jumpnode
+    HostName 176.109.81.245
+    User team
+    ForwardAgent yes
+    #WebUI HistoryServer
+    LocalForward 19888 127.0.0.1:19888
+    #WebUI YarnResource Manager
+    LocalForward 8088 127.0.0.1:8088
+    #WebUI NameNode
+    LocalForward 9870 127.0.0.1:9870
+    #WebUI DataNode (сразу все
+    LocalForward 50100 127.0.0.1:50100
+    LocalForward 50101 127.0.0.1:50101
+    LocalForward 50102 127.0.0.1:50102
+    #WevUI NodeManager'ов
+    LocalForward 8050 127.0.0.1:8050
+    LocalForward 8051 127.0.0.1:8051
+    LocalForward 8052 127.0.0.1:8052
+    #HiveUI
+    LocalForward 12345 127.0.0.1:12345
+```
+Вернемся в пользователя hadoop
+
+```
+sudo -i -u hadoop
+```
+Создадим прописанную в конфигах директорию на HDFS:
+
+```
+hdfs dfs -mkdir -p /user/hive/warehouse
+hdfs dfs -mkdir -p /tmp
+```
+Пропишем права для Hive:
+```
+hdfs dfs -chmod g+w /tmp
+hdfs dfs -chmod g+w /user/hive
+```
+
+Запустим Hive:
+
+```
+cd $HIVE_HOME
+./bin/schematool -dbType postgres -initSchema
+hive --hiveconf hive.security.authorization.enabled=false --service hiveserver2 1>> /tmp/hs2.log 2>> /tmp/hs2.log &
+```
+
+В выводе jps должен появиться:
+
+```
+hadoop@team-45-jn:~/apache-hive-4.0.1-bin$ jps
+8165 Jps
+48122 RunJar
+[1] 48060
+```
+Подключимся к консоли Hive и начнем работать.
+
+
+Создадим директорию для нашего датасета:
+
+```
+hdfs dfs -mkdir /input
+wget https://raw.githubusercontent.com/ADBondarenko/BigDataProjectOPS/refs/heads/main/housing.csv
+dfs -put housing.csv /input
+
+beeline -u jdbc:hive2://localhost:5433/metastore -n hive -p hivepass
+```
+
