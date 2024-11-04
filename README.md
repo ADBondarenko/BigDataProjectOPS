@@ -1262,12 +1262,7 @@ hdfs dfs -put housing.csv /input
 beeline -u jdbc:hive2://localhost:5433/prod -n hive -p hivepass
 ```
 
-
-
-Поработаем над созданием новой партицированной таблицы:
-
-```
-#Установим настройки партицирования:
+Установим настройки партицирования:
 
 ```
 SET hive.exec.dynamic.partition = true;
@@ -1290,6 +1285,7 @@ PARTITIONED BY (income_partition STRING)
 STORED AS PARQUET
 LOCATION '/user/hive/warehouse/california_housing_partitioned_parquet/';
 ```
+
 Соаздадим и выгрузим исходную таблицу из .csv:
 
 ```
