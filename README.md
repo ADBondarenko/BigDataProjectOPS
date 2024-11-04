@@ -169,6 +169,7 @@ nano ~/.profile
 export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64/bin/java
 export HADOOP_HOME=/home/hadoop/hadoop-3.4.0
 export PATH=$PATH:$HADOOP_HOME/bin:$HADOOP_HOME/sbin
+export HADOOP_MAPRED_HOME=$HADOOP_HOME
 ```
 Активируем окружение: 
 ```
@@ -266,6 +267,19 @@ nano hadoop-env.sh
 
 ```
 export JAVA_HOME=/usr/lib/jvm/java-11-openjdk-amd64/bin/java
+export HADOOP_MAPRED_HOME=/home/hadoop/hadoop-3.4.0
+```
+
+```
+cd $HADOOP_HOME/etc/hadoop/
+nano mapred-env.sh
+```
+
+Пропишем в файлике: 
+
+```
+export HADOOP_HOME=/home/hadoop/hadoop-3.4.0
+
 ```
 Расшарим конфиг на все остальные хосты:
 
@@ -329,7 +343,6 @@ cd $HADOOP_HOME/etc/hadoop/
 scp *.xml team-45-jn:/home/hadoop/hadoop-3.4.0/etc/hadoop/
 scp *.xml team-45-dn-0:/home/hadoop/hadoop-3.4.0/etc/hadoop/
 scp *.xml team-45-dn-1:/home/hadoop/hadoop-3.4.0/etc/hadoop/
-
 ```
 
 Теперь можем запустить хосты и заняться веб-интерфейсами (публикацией их через джамп ноду. 
@@ -644,39 +657,46 @@ cd $HADOOP_HOME/etc/hadoop
 
 ```
 <configuration>
-	<property>
-		<name>mapreduce.framework.name</name>
-		<value>yarn</value>
-	</property>
-	<property>
-		<name>mapreduce.application.classpath</name>
-		<value>$HADOOP_HOME/share/hadoop/mapreduce/*:$HADOOP_HOME/share/hadoop/mapreduce/lib/*</value>
-	</property>
-<property>
-    <name>mapreduce.jobhistory.address</name>
-    <value>team-45-nn:10020</value>
-</property>
-<property>
-    <name>mapreduce.jobhistory.webapp.address</name>
-    <value>team-45-nn:19888</value>
-</property>
-<property>
-    <name>mapreduce.jobhistory.done-dir</name>
-    <value>/mapreduce/history/done</value>
-</property>
-<property>
-    <name>mapreduce.jobhistory.intermediate-done-dir</name>
-    <value>/mapreduce/history/intermediate</value>
-</property>
-<property>
-    <name>yarn.nodemanager.webapp.address</name>
-    <value>0.0.0.0:8050</value> <!-- Замените 8050 на желаемый порт -->
-    <description>Адрес и порт для HTTP веб-интерфейса NodeManager</description>
-</property>
-
+    <property>
+        <name>mapreduce.framework.name</name>
+        <value>yarn</value>
+    </property>
+    <property>
+        <name>mapreduce.application.classpath</name>
+        <value>/home/hadoop/hadoop-3.4.0/share/hadoop/mapreduce/*:/home/hadoop/hadoop-3.4.0/share/hadoop/mapreduce/lib/*</value>
+    </property>
+    <property>
+        <name>yarn.app.mapreduce.am.env</name>
+        <value>HADOOP_MAPRED_HOME=/home/hadoop/hadoop-3.4.0</value>
+        <description>Environment variables for the Application Master.</description>
+    </property>
+    <property>
+        <name>mapreduce.map.env</name>
+        <value>HADOOP_MAPRED_HOME=/home/hadoop/hadoop-3.4.0</value>
+        <description>Environment variables for map tasks.</description>
+    </property>
+    <property>
+        <name>mapreduce.reduce.env</name>
+        <value>HADOOP_MAPRED_HOME=/home/hadoop/hadoop-3.4.0</value>
+        <description>Environment variables for reduce tasks.</description>
+    </property>
+    <property>
+        <name>mapreduce.jobhistory.webapp.address</name>
+        <value>team-45-nn:19888</value>
+    </property>
+    <property>
+        <name>mapreduce.jobhistory.done-dir</name>
+        <value>/mapreduce/history/done</value>
+    </property>
+    <property>
+        <name>mapreduce.jobhistory.intermediate-done-dir</name>
+        <value>/mapreduce/history/intermediate</value>
+    </property>
 </configuration>
 ```
-**в yarn-site.xml** - ``` nano mapred-site.xml```:
+
+
+**в yarn-site.xml** - ``` nano yarn-site.xml```:
 
 ```
 <configuration>
@@ -711,6 +731,14 @@ cd $HADOOP_HOME/etc/hadoop/
 scp *.xml team-45-jn:/home/hadoop/hadoop-3.4.0/etc/hadoop/
 scp *.xml team-45-dn-0:/home/hadoop/hadoop-3.4.0/etc/hadoop/
 scp *.xml team-45-dn-1:/home/hadoop/hadoop-3.4.0/etc/hadoop/
+
+scp hadoop-env.sh team-45-jn:/home/hadoop/hadoop-3.4.0/etc/hadoop/
+scp hadoop-env.sh team-45-dn-0:/home/hadoop/hadoop-3.4.0/etc/hadoop/
+scp hadoop-env.sh team-45-dn-1:/home/hadoop/hadoop-3.4.0/etc/hadoop/
+
+scp mapred-env.sh team-45-jn:/home/hadoop/hadoop-3.4.0/etc/hadoop/
+scp mapred-env.sh team-45-dn-0:/home/hadoop/hadoop-3.4.0/etc/hadoop/
+scp mapred-env.sh team-45-dn-1:/home/hadoop/hadoop-3.4.0/etc/hadoop/
 ```
 Запускаем YARN:
 
@@ -1018,8 +1046,14 @@ nano hive-site.xml
 ```
 <configuration>
   <property>
-    <name>hive.server2.option.authentification</name>
+    <name>hive.server2.authentication</name>
     <value>NONE</value>
+    <description>Authentication mode for HiveServer2</description>
+  </property>
+   <property>
+    <name>hive.server2.thrift.bind.host</name>
+    <value>0.0.0.0</value> <!-- Или используйте 0.0.0.0 для всех интерфейсов -->
+    <description>Hostname to bind HiveServer2 Thrift service.</description>
   </property>
     <property>
     <name>hive.server2.thrift.port</name>
@@ -1061,7 +1095,7 @@ nano hive-site.xml
 
 <property>
   <name>hive.server2.webui.port</name>
-  <value>12345</value>
+  <value>12344</value>
   <description>Port for the Hive Web UI</description>
 </property>
 
@@ -1115,7 +1149,7 @@ server {
         location / {
                 # First attempt to serve request as file, then
                 # as directory, then fall back to displaying a 404.
-                proxy_pass http://127.0.0.1:12345;
+                proxy_pass http://127.0.0.1:12344;
                 auth_basic "Restricted Access";
                 auth_basic_user_file /etc/nginx/.htpasswd;
         }
@@ -1190,7 +1224,11 @@ hdfs dfs -chmod g+w /user/hive
 ```
 cd $HIVE_HOME
 ./bin/schematool -dbType postgres -initSchema
-hive --hiveconf hive.security.authorization.enabled=false --service hiveserver2 1>> /tmp/hs2.log 2>> /tmp/hs2.log &
+hive --hiveconf hive.server2.enable.doAs=false \
+     --hiveconf hive.security.authorization.enabled=false \
+     --hiveconf hive.server2.thrift.bind.host=0.0.0.0 \
+     --hiveconf hive.server2.thrift.port=5433 \
+     --service hiveserver2 1>> /tmp/hs2.log 2>> /tmp/hs2.log &
 ```
 
 В выводе jps должен появиться:
@@ -1202,15 +1240,126 @@ hadoop@team-45-jn:~/apache-hive-4.0.1-bin$ jps
 [1] 48060
 ```
 Подключимся к консоли Hive и начнем работать.
+```
+beeline -u jdbc:hive2://localhost:5433/default -n hive -p hivepass hivepass
+```
 
+Создадим необходимую БД (в консоли beeline): 
+
+```
+CREATE DATABASE prod;
+[ВЫЙДЕМ ИЗ КОНСОЛИ]
+[CTRL+C]
+```
 
 Создадим директорию для нашего датасета:
 
 ```
 hdfs dfs -mkdir /input
 wget https://raw.githubusercontent.com/ADBondarenko/BigDataProjectOPS/refs/heads/main/housing.csv
-dfs -put housing.csv /input
+hdfs dfs -put housing.csv /input
 
-beeline -u jdbc:hive2://localhost:5433/metastore -n hive -p hivepass
+beeline -u jdbc:hive2://localhost:5433/prod -n hive -p hivepass
 ```
 
+
+
+Поработаем над созданием новой партицированной таблицы:
+
+```
+#Установим настройки партицирования:
+
+```
+SET hive.exec.dynamic.partition = true;
+SET hive.exec.dynamic.partition.mode = nonstrict;
+```
+
+```
+CREATE EXTERNAL TABLE california_housing_partitioned_parquet (
+    longitude DOUBLE,
+    latitude DOUBLE,
+    housing_median_age INT,
+    total_rooms INT,
+    total_bedrooms INT,
+    population INT,
+    households INT,
+    median_income DOUBLE,
+    median_house_value DOUBLE
+)
+PARTITIONED BY (income_partition STRING)
+STORED AS PARQUET
+LOCATION '/user/hive/warehouse/california_housing_partitioned_parquet/';
+```
+Соаздадим и выгрузим исходную таблицу из .csv:
+
+```
+CREATE TABLE california_housing_raw (
+    longitude DOUBLE,
+    latitude DOUBLE,
+    housing_median_age INT,
+    total_rooms INT,
+    total_bedrooms INT,
+    population INT,
+    households INT,
+    median_income DOUBLE,
+    median_house_value DOUBLE,
+    income_partition STRING
+)
+ROW FORMAT DELIMITED
+FIELDS TERMINATED BY ','
+STORED AS TEXTFILE;
+```
+
+выгрузим: 
+
+```
+LOAD DATA INPATH '/input/housing.csv' INTO TABLE california_housing_raw;
+```
+
+Выгрузим с партицией по доходу через CASE WHEN:
+
+```
+INSERT INTO TABLE california_housing_partitioned_parquet
+PARTITION (income_partition)
+SELECT 
+    longitude,
+    latitude,
+    housing_median_age,
+    total_rooms,
+    total_bedrooms,
+    population,
+    households,
+    median_income,
+    median_house_value,
+    CASE
+        WHEN median_income < 2.5 THEN 'low'
+        WHEN median_income < 4.5 THEN 'medium'
+        ELSE 'high'
+    END AS income_partition
+FROM california_housing_raw;
+```
+
+Посмотрим на то, верно ли были созданы партиции:
+
+
+```
+SHOW PARTITIONS california_housing_partitioned_parquet;
+
+SELECT * FROM california_housing_partitioned_parquet LIMIT 10;
+```
+
+Ура, мы восхитительны: 
+
+```
+INFO  : Completed executing command(queryId=hadoop_20241104154228_18455f37-280c-469b-9e9d-df8a26253555); Time taken: 0.028 seconds
++--------------------------+
+|        partition         |
++--------------------------+
+| income_partition=high    |
+| income_partition=low     |
+| income_partition=medium  |
++--------------------------+
+3 rows selected (0.127 seconds)
+```
+
+Done.
