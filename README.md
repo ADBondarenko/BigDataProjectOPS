@@ -1552,3 +1552,191 @@ drwxr-xr-x   - hadoop supergroup          0 2024-12-18 18:33 /user/hive/warehous
 drwxr-xr-x   - hadoop supergroup          0 2024-12-18 18:33 /user/hive/warehouse/hw_4_real_estate.db/housing_partitioned/income_category=very_high
 ```
 
+# 5. Партицирование под управлением AirFlow
+
+Не выходя из венвы на предыдушем этапе делаем следующее: 
+
+```
+pip install apache-airflow
+pip install apache-airflow-providers-apache-spark
+airflow db init
+airflow users create -r Admin -u hadoop -p [Отправлен Саттару]  -f Hadoop -l Hadoopych -e adbondarenko@edu.hse.ruHadoopych
+```
+Настроим реверс-проксю, чтобы подключаться к AirFlow и смотреть на DAG'и. Airflow будет гулять на 9764 порту (а проксится на 9765).
+```
+exit 
+```
+
+Выходит в sudo-ера: 
+
+```
+cd /etc/nginx/sites-available/
+sudo cp dn0 af
+sudo ln -s /etc/nginx/sites-available/af /etc/nginx/sites-enabled/af
+sudo nano af
+```
+Пропишем туда:
+
+```
+server {
+        listen 9765 default_server;
+
+        server_name af;
+
+        location / {
+                # First attempt to serve request as file, then
+                # as directory, then fall back to displaying a 404.
+                proxy_pass http://team-45-jn:9764;
+                auth_basic "Restricted Access";
+                auth_basic_user_file /etc/nginx/.htpasswd;
+        }
+
+}
+```
+
+
+На локальном компьютере необходимо добавить в ~/.ssh/config:
+
+```
+nano ~/.ssh/config
+```
+следующие строки:
+ 
+```
+#Настройка для jumpnode
+Host jumpnode
+    HostName 176.109.81.245
+    User team
+    ForwardAgent yes
+    #WebUI HistoryServer
+    LocalForward 19888 127.0.0.1:19888
+    #WebUI YarnResource Manager
+    LocalForward 8088 127.0.0.1:8088
+    #WebUI NameNode
+    LocalForward 9870 127.0.0.1:9870
+    #WebUI DataNode (сразу все
+    LocalForward 50100 127.0.0.1:50100
+    LocalForward 50101 127.0.0.1:50101
+    LocalForward 50102 127.0.0.1:50102
+    #WevUI NodeManager'ов
+    LocalForward 8050 127.0.0.1:8050
+    LocalForward 8051 127.0.0.1:8051
+    LocalForward 8052 127.0.0.1:8052
+    #WebUI
+    LocalForward 9765 127.0.0.1:9765
+```
+вернемся на пользователя hadoop:
+```
+sudo -i -u hadoop
+```
+
+в .profile пропишем AIRFLOW_HOME:
+
+```
+nano ~/.profile
+```
+
+ПРОПИШЕМ [export AIRFLOW_HOME=~/airflow]
+
+```
+source ~/.profile
+source venv/bin/activate
+
+```
+
+Затем запустим Веб-сервер и планировщик заданий
+
+```
+nohup airflow webserver -p 9764 > ~/airflow/logs/webserver.log 2>&1 &
+nohup airflow scheduler > ~/airflow/logs/scheduler.log 2>&1 &
+
+```
+
+
+Обернем код из предыдущего задания в DAG и запустим его: 
+
+```
+cd $AIRFLOW_HOME
+
+dir=$(cat airflow.cfg | grep dags_folder | awk -F'=' '{print $2}' | xargs)
+mkdir -p "$dir"
+cd "$dir"
+touch housing_data_processing.py
+nano housing_data_processing.py
+```
+
+Запишем туда такой код
+
+```
+from airflow import DAG
+from airflow.operators.bash import BashOperator
+from airflow.providers.apache.spark.operators.spark_submit import SparkSubmitOperator
+from datetime import datetime, timedelta
+
+'''
+Определение аргументов DAG
+'''
+default_args = {
+    'owner': 'airflow',
+    'depends_on_past': False,
+    'email_on_failure': False,
+    'email_on_retry': False,
+    'retries': 1,
+    'retry_delay': timedelta(minutes=5),
+}
+
+'''
+Создание DAG
+'''
+
+with DAG(
+    dag_id='housing_data_processing',
+    default_args=default_args,
+    description='Process and partition housing data using Spark',
+    schedule_interval=None,
+    start_date=datetime(2024, 12, 17), #Сдвигаем на -1, чтобы запустился автоматом, также пропишем консольную команду
+    catchup=False,
+) as dag:
+
+    # Оператор для загрузки данных
+    download_data = BashOperator(
+        task_id='download_data',
+        bash_command='wget -O /tmp/housing.csv https://raw.githubusercontent.com/ADBondarenko/BigDataProjectOPS/refs/heads/main/housing.csv',
+    )
+
+    # Оператор для выполнения PySpark скрипта
+    process_data = SparkSubmitOperator(
+        task_id='process_data',
+        application='/home/hadoop/hw4_partition.py',
+        conn_id='spark_default',
+        application_args=['--input', '/tmp/housing.csv', '--output', '/user/hive/warehouse/housing_partitioned'],
+        conf={
+            "spark.sql.warehouse.dir": "/user/hive/warehouse",
+            "spark.hive.metastore.uris": "thrift://team-45-jn:9084",
+            "spark.sql.hive.metastore.version": "3.1.2",
+            "spark.sql.hive.metastore.jars": "maven"
+        },
+        driver_memory='2g',
+        executor_memory='4g',
+        num_executors=2,
+    )
+
+    # Оператор для верификации результатов
+    verify_results = BashOperator(
+        task_id='verify_results',
+ bash_command='beeline -u "jdbc:hive2://localhost:5433/default" -n hive -p hivepass -e "SHOW PARTITIONS hw_4_real_estate.housing_partitioned;"',
+    )
+
+    # Задачи
+    download_data >> process_data >> verify_results
+    
+```
+
+Запустим DAG вручную: 
+
+
+```
+airflow dags trigger housing_data_processing
+airflow dags backfill -s 2024-12-18 housing_data_processing
+```
+Проверить можно в UI. Все 3 этапа отработали, мы молодцы.
