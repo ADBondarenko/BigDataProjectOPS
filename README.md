@@ -1359,3 +1359,196 @@ INFO  : Completed executing command(queryId=hadoop_20241104154228_18455f37-280c-
 ```
 
 Done.
+
+## 4. Развертывание Apache Spark
+
+Зайдем на jumpnode. 
+Установим venv:
+```
+sudo apt install python3-venv
+```
+Переключимся на юзера hadoop.
+
+```
+ssh jumpnode
+sudo -i -u hadoop
+```
+
+Вновь запустим Hive (по умолчанию, он отключен на предыдущей итерации). Проверить это можно командой (jps), если RunJar нет - значит нет и Hive'а.
+
+```
+hive --hiveconf hive.server2.enable.doAs=false \
+     --hiveconf hive.security.authorization.enabled=false \
+     --hiveconf hive.server2.thrift.bind.host=0.0.0.0 \
+     --hiveconf hive.server2.thrift.port=5433 \
+     --service hiveserver2 1>> /tmp/hs2.log 2>> /tmp/hs2.log &
+nohup hive --service metastore -p 9084 > metastore.out 2>&1 &
+```э
+!**NB** Если метастор не загрузился в скрытом режиме - лучше всего открыть еще одно shh-подключение к Jumpnode'е
+
+Создадим виртуальное окружение и будем работать с ним (PySpark) в текущей папке ~ (/home/hadoop/):
+```
+python3 -m venv venv
+```
+
+Активируем его: 
+
+```
+source venv/bin/activate
+```
+
+Скачаем необходимые дистрибутивы (pySpark и onetl):
+
+```
+pip install pySpark
+pip install onetl
+```
+
+
+
+Заново положим housing.csv 
+в хранилище Hive. 
+
+```
+hdfs dfs -mkdir /input
+wget https://raw.githubusercontent.com/ADBondarenko/BigDataProjectOPS/refs/heads/main/housing.csv
+hdfs dfs -put housing.csv /input
+
+Также пропишем необходимые для работы переменные окружения ```nano ~/.profile```: 
+
+[ПРОПИШЕМ ТУДА]
+
+```
+export HADOOP_CONF_DIR=$HADOOP_HOME/etc/hadoop/
+export YARN_CONF_DIR=$HADOOP_HOME/etc/hadoop/
+
+```
+
+Далее пропишем ```source ~/.profile```
+
+Проверим подлкючение к Metastore: 
+
+```
+spark-shell --master yarn --conf "spark.hive.metastore.uris=thrift://team-45-jn:9084"
+```
+
+и выйдем из процесса 
+
+```
+Напишем следующую программу для spark и запишем ее в файл hw4_partition.py
+
+```
+touch hw4_partition.py
+nano hw4_partition.py
+```
+
+[СКОПИРУЕМ В РЕДАКТОР ТЕСТ НИЖЕ И СОХРАНИМ]
+
+
+```
+from pyspark.sql import SparkSession
+from onetl.connection import SparkHDFS
+from onetl.file import FileDFReader
+from onetl.file.format import CSV
+from pyspark.sql.functions import udf, avg, count, log, round, col
+from pyspark.sql.types import StringType, DoubleType 
+
+spark = SparkSession.builder \
+.master("yarn") \
+.appName("spark-with-yarn") \
+.config("spark.sql.warehouse.dir", "/user/hive/warehouse") \
+.config("spark.hive.metastore.uris", "thrift://team-45-jn:9084") \
+.config("spark.sql.hive.metastore.version", "3.1.2") \
+.config("spark.sql.hive.metastore.jars", "maven") \
+.enableHiveSupport() \
+.getOrCreate()
+
+hdfs = SparkHDFS(host = "team-45-nn", port = 9000, spark=spark, cluster = "test")
+
+print(hdfs.check())
+print(spark)
+reader = FileDFReader(connection = hdfs, format=CSV(delimiter=",", header = True), source_path="/input"
+
+df= reader.run(["housing.csv"])
+df.printSchema()
+df = df.withColumn("median_income", df["median_income"].cast(DoubleType()))
+
+'''
+Теперь обработаем данные
+'''
+
+
+'''
+1) Функция для биннинга median_income
+'''
+def income_category(income):
+    if income < 2:
+        return "low"
+    elif income < 4:
+        return "medium"
+    elif income < 6:
+        return "high"
+    else:
+        return "very_high"
+
+income_category_udf = udf(income_category, StringType())
+
+df2 = df.withColumn("income_category", income_category_udf(col("median_income")))
+
+'''
+Агрегации и трансформации
+'''
+agg_df = df2.groupBy("income_category").agg(
+    avg("median_house_value").alias("avg_house_value"),  # агрегирующая ф-я 1
+    avg("total_rooms").alias("avg_rooms"),               # агрегирующая ф-я 2
+    avg("population").alias("avg_population"),           # агрегирующая ф-я 3
+    count("*").alias("count_records")                    # агрегирующая ф-я 4
+)
+
+'''
+Применим логарифм к avg_house_value
+'''
+agg_df = agg_df.withColumn("log_avg_house_value", log(col("avg_house_value"))) # трансформация 5
+
+'''
+Округление avg_rooms
+'''
+agg_df = agg_df.withColumn("rounded_avg_rooms", round(col("avg_rooms"), 2)) # трансформация 6
+
+'''
+Теперь у нас есть минимум 6 функций (1 UDF, 3 avg, 1 count, 1 log, 1 round).
+'''
+spark.sql("CREATE DATABASE IF NOT EXISTS hw_4_real_estate")
+'''
+Сохранение результирующей таблицы с партиционированием по income_category
+'''
+agg_df.write \
+    .format("parquet") \
+    .mode("overwrite") \
+    .partitionBy("income_category") \
+    .saveAsTable("hw_4_real_estate.housing_partitioned")
+```
+
+После этого запустим скрипт:
+
+```
+python hw4_partition.py 
+```
+
+Все отработало, мы восхитительны, рузальтаты можем посмотреть вот так: 
+
+```
+hdfs dfs -ls /user/hive/warehouse/hw_4_real_estate.db/housing_partitioned
+```
+
+Ожидаемый результат такой:
+
+```
+Found 5 items
+-rw-r--r--   3 hadoop supergroup          0 2024-12-18 18:33 /user/hive/warehouse/hw_4_real_estate.db/housing_partitioned/_SUCCESS
+drwxr-xr-x   - hadoop supergroup          0 2024-12-18 18:33 /user/hive/warehouse/hw_4_real_estate.db/housing_partitioned/income_category=high
+drwxr-xr-x   - hadoop supergroup          0 2024-12-18 18:33 /user/hive/warehouse/hw_4_real_estate.db/housing_partitioned/income_category=low
+drwxr-xr-x   - hadoop supergroup          0 2024-12-18 18:33 /user/hive/warehouse/hw_4_real_estate.db/housing_partitioned/income_category=medium
+drwxr-xr-x   - hadoop supergroup          0 2024-12-18 18:33 /user/hive/warehouse/hw_4_real_estate.db/housing_partitioned/income_category=very_high
+```
+
